@@ -18,6 +18,7 @@ from .storage import Storage
 from .watcher import ScheduleWatcher
 
 COMMANDS = [
+    BotCommand(command="next", description="Следующий урок"),
     BotCommand(command="today", description="Расписание на сегодня"),
     BotCommand(command="tomorrow", description="Расписание на завтра"),
     BotCommand(command="week", description="Расписание на неделю"),

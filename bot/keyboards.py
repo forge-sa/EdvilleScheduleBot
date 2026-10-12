@@ -6,6 +6,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from .edville import Entity, Kind
 
+BTN_NEXT = "⏭ Следующий урок"
 BTN_TODAY = "📅 Сегодня"
 BTN_TOMORROW = "➡️ Завтра"
 BTN_WEEK = "🗓 Неделя"
@@ -74,6 +75,7 @@ def teacher_picker(teachers: list[Entity], page: int = 0) -> InlineKeyboardMarku
 def main_menu(kind: Kind) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
+            [KeyboardButton(text=BTN_NEXT)],
             [KeyboardButton(text=BTN_TODAY), KeyboardButton(text=BTN_TOMORROW)],
             [KeyboardButton(text=BTN_WEEK), KeyboardButton(text=BTN_CHANGE[kind])],
         ],

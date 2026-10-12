@@ -18,6 +18,8 @@ import json
 import re
 import time
 from dataclasses import asdict, dataclass
+from datetime import datetime
+from datetime import time as dtime
 from typing import Literal
 
 import aiohttp
@@ -59,6 +61,11 @@ class Lesson:
     meta: str
     category: str
 
+    @property
+    def start(self) -> dtime | None:
+        m = re.match(r"(\d{1,2}):(\d{2})", self.time)
+        return dtime(int(m[1]), int(m[2])) if m else None
+
 
 @dataclass(frozen=True)
 class Break:
@@ -89,6 +96,21 @@ class Schedule:
 
     def day(self, index: int) -> Day | None:
         return next((d for d in self.days if d.index == index), None)
+
+    def next_lesson(self, now: datetime) -> tuple[Day, Lesson] | None:
+        """The first lesson starting after `now`, looking up to a week ahead.
+
+        Only lessons count; breakfast, brunch, lunch and snack are skipped. A
+        lesson already in progress is not "next".
+        """
+        for step in range(8):  # step 7 is the same weekday next week
+            day = self.day((now.weekday() + step) % 7)
+            if day is None:
+                continue
+            for lesson in sorted((l for l in day.lessons if l.start), key=lambda l: l.start):
+                if step > 0 or lesson.start > now.time():
+                    return day, lesson
+        return None
 
     def fingerprint(self) -> str:
         payload = json.dumps(self.to_dict()["days"], ensure_ascii=False, sort_keys=True)

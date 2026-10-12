@@ -15,6 +15,7 @@ from .edville import Day, EdvilleClient, EdvilleError, Entity, Kind, Schedule
 from .keyboards import (
     BACK_TO_ROLE,
     BTN_CHANGE,
+    BTN_NEXT,
     BTN_TODAY,
     BTN_TOMORROW,
     BTN_WEEK,
@@ -29,7 +30,7 @@ from .keyboards import (
     role_picker,
     teacher_picker,
 )
-from .render import label, render_day, render_week
+from .render import label, render_day, render_next, render_week
 from .storage import Storage, Subscription
 
 log = logging.getLogger(__name__)
@@ -37,6 +38,7 @@ router = Router()
 
 HELP = (
     "Я показываю расписание EdVille и присылаю новое, когда оно меняется.\n\n"
+    "/next — следующий урок\n"
     "/today — расписание на сегодня\n"
     "/tomorrow — на завтра\n"
     "/week — на всю неделю\n"
@@ -263,6 +265,25 @@ async def _send_day(
         when = "Сегодня" if offset == 0 else "Завтра"
         note = "\n".join(filter(None, [note, f"{when} уроков нет 🎉 Ближайший учебный день:"]))
     await message.answer(render_day(schedule, day, note), reply_markup=main_menu(sub.kind))
+
+
+@router.message(Command("next"))
+@router.message(F.text == BTN_NEXT)
+async def cmd_next(message: Message, edville: EdvilleClient, db: Storage, state: FSMContext, config: Config) -> None:
+    sub = await _subscription(message, db, state)
+    if sub is None:
+        return
+    loaded = await _load(edville, db, sub)
+    if loaded is None:
+        await message.answer(LOAD_FAILED)
+        return
+    schedule, note = loaded
+    now = datetime.now(config.timezone)
+    found = schedule.next_lesson(now)
+    if found is None:
+        await message.answer("В расписании пока нет уроков.", reply_markup=main_menu(sub.kind))
+        return
+    await message.answer(render_next(schedule, *found, now, note), reply_markup=main_menu(sub.kind))
 
 
 @router.message(Command("today"))

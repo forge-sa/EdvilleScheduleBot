@@ -1,8 +1,10 @@
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
-from bot.edville import Break, Lesson, ParseError, Schedule, parse_entities, parse_schedule
+from bot.edville import Break, Day, Lesson, ParseError, Schedule, parse_entities, parse_schedule
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -58,3 +60,50 @@ def test_roundtrip_and_fingerprint():
     assert restored == s
     assert restored.fingerprint() == s.fingerprint()
     assert parse_schedule(load("class_5.html"), "class", "5").fingerprint() != s.fingerprint()
+
+
+def at(day: int, hhmm: str) -> datetime:
+    """A moment in the week of 12 Oct 2026, which starts on a Monday (day 0)."""
+    hour, minute = map(int, hhmm.split(":"))
+    return datetime(2026, 10, 12 + day, hour, minute, tzinfo=ZoneInfo("Asia/Almaty"))
+
+
+def next_of(schedule, day, hhmm):
+    found_day, lesson = schedule.next_lesson(at(day, hhmm))
+    return found_day.index, lesson.num, lesson.start.strftime("%H:%M")
+
+
+@pytest.mark.parametrize(
+    "day, now, expected",
+    [
+        (0, "07:00", (0, 1, "08:30")),  # before school
+        (0, "08:15", (0, 1, "08:30")),  # during breakfast
+        (0, "08:30", (0, 2, "09:15")),  # lesson 1 just started, so it's not "next"
+        (0, "10:10", (0, 4, "10:55")),  # during lesson 3: brunch is skipped
+        (0, "10:45", (0, 4, "10:55")),  # during brunch
+        (0, "13:20", (0, 7, "13:55")),  # during lunch
+        (0, "16:30", (1, 1, "08:30")),  # during the last lesson -> tomorrow
+        (4, "17:00", (0, 1, "08:30")),  # Friday evening -> Monday
+        (5, "12:00", (0, 1, "08:30")),  # Saturday -> Monday
+        (6, "23:59", (0, 1, "08:30")),  # Sunday night -> Monday
+    ],
+)
+def test_next_lesson_for_class(day, now, expected):
+    s = parse_schedule(load("class_9a.html"), "class", "9a")
+    assert next_of(s, day, now) == expected
+
+
+def test_next_lesson_skips_free_periods_for_teachers():
+    s = parse_schedule(load("teacher_tyler-quinton.html"), "teacher", "tyler-quinton")
+    assert next_of(s, 0, "10:00") == (0, 9, "15:25")
+
+
+def test_next_lesson_with_late_start():
+    s = parse_schedule(load("class_5.html"), "class", "5")
+    assert next_of(s, 0, "08:00") == (0, 6, "13:10")
+
+
+def test_no_lessons_at_all():
+    s = parse_schedule(load("class_9a.html"), "class", "9a")
+    empty = Schedule(s.kind, s.slug, s.title, tuple(Day(d.index, ()) for d in s.days))
+    assert empty.next_lesson(at(0, "09:00")) is None

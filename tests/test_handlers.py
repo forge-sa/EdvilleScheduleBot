@@ -244,3 +244,13 @@ def test_search_matches_parts_of_name():
     assert [t.title for t in search_teachers(teachers, "яна")] == ["Яна Мустюкова"]
     assert [t.title for t in search_teachers(teachers, "tyler q")] == ["Tyler Quinton"]
     assert len(search_teachers(teachers, "адиль")) == 2
+
+
+def test_next_lesson_button():
+    h = Harness()
+    assert "Сначала выберите" in texts(h.text("⏭ Следующий урок"))[0]
+    h.press("pick:class:9a")
+    calls = h.text("⏭ Следующий урок")
+    assert "Следующий урок · Класс 9А" in texts(calls)[0]
+    assert menu(calls[-1])[0] == "⏭ Следующий урок"
+    assert "Следующий урок" in texts(h.text("/next"))[0]

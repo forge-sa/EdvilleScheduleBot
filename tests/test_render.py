@@ -2,7 +2,8 @@ from dataclasses import replace
 from pathlib import Path
 
 from bot.edville import Day, Schedule, parse_schedule
-from bot.render import MAX_MESSAGE, diff, pack, render_changes, render_day, render_week
+from bot.render import MAX_MESSAGE, diff, pack, render_changes, render_day, render_next, render_week
+from tests.test_edville import at
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -96,3 +97,19 @@ def test_teacher_class_change():
     text = render_changes(old, new)
     assert "Tyler Quinton" in text
     assert "🏫 <b>Пн, 2 урок</b>, Физика: класс 7А → класс 9А" in text
+
+
+def test_next_lesson_message():
+    s = schedule_9a()
+
+    def next_text(day, hhmm):
+        now = at(day, hhmm)
+        return render_next(s, *s.next_lesson(now), now)
+
+    text = next_text(0, "10:43")
+    assert text.startswith("⏭ <b>Следующий урок · Класс 9А</b>")
+    assert "4️⃣ <b>Алгебра</b>" in text and "10:55–11:35 · Жасұланбек Бахтияр" in text
+    assert text.endswith("⏳ Через 12 мин")
+    assert next_text(0, "07:00").endswith("⏳ Через 1 ч 30 мин")
+    assert next_text(0, "17:00").endswith("📅 Завтра")
+    assert next_text(4, "17:00").endswith("📅 В понедельник")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from html import escape
 
 from .edville import DAY_NAMES, Break, Day, Kind, Lesson, Schedule
@@ -12,6 +13,7 @@ MAX_CHANGES_SHOWN = 20
 
 _KEYCAPS = ["0️⃣", "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
 _SHORT_DAYS = ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
+_ON_DAY = ("В понедельник", "Во вторник", "В среду", "В четверг", "В пятницу", "В субботу", "В воскресенье")
 
 
 def _num(n: int) -> str:
@@ -38,11 +40,38 @@ def render_day(schedule: Schedule, day: Day, note: str = "") -> str:
         if isinstance(item, Break):
             lines.append(f"<i>{escape(item.name)} · {item.time}</i>")
         else:
-            details = " · ".join(x for x in (item.time, escape(item.meta)) if x)
-            lines.append(f"{_num(item.num)} <b>{escape(item.subject)}</b>")
-            if details:
-                lines.append(f"      {details}")
+            lines += _lesson_lines(item)
     return "\n".join(lines).strip()
+
+
+def _lesson_lines(lesson: Lesson) -> list[str]:
+    lines = [f"{_num(lesson.num)} <b>{escape(lesson.subject)}</b>"]
+    details = " · ".join(x for x in (lesson.time, escape(lesson.meta)) if x)
+    if details:
+        lines.append(f"      {details}")
+    return lines
+
+
+def _minutes(minutes: int) -> str:
+    hours, minutes = divmod(minutes, 60)
+    return " ".join(part for part in (f"{hours} ч" if hours else "", f"{minutes} мин" if minutes else "") if part)
+
+
+def render_next(schedule: Schedule, day: Day, lesson: Lesson, now: datetime, note: str = "") -> str:
+    """The lesson found by `Schedule.next_lesson`, with when it starts."""
+    lines = [note, ""] if note else []
+    lines += [f"⏭ <b>Следующий урок · {_heading(schedule)}</b>", ""]
+    lines += _lesson_lines(lesson)
+    lines.append("")
+    if day.index == now.weekday() and lesson.start > now.time():
+        seconds = (lesson.start.hour * 60 + lesson.start.minute) * 60
+        seconds -= now.hour * 3600 + now.minute * 60 + now.second
+        lines.append(f"⏳ Через {_minutes(-(-seconds // 60))}")
+    elif day.index == (now.weekday() + 1) % 7:
+        lines.append("📅 Завтра")
+    else:
+        lines.append(f"📅 {_ON_DAY[day.index]}")
+    return "\n".join(lines)
 
 
 def render_week(schedule: Schedule) -> list[str]:

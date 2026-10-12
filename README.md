@@ -14,8 +14,13 @@ to students and teachers, and sends them the new timetable whenever theirs chang
     "Sport Activity 2", "Вокал 2", "Драма 3", i.e. any name containing a digit) are hidden.
   - Every list has a "⬅️ Назад" button that returns to the first question.
 - After the pick, the bot sends the week's timetable and shows a menu:
-  **📅 Сегодня · ➡️ Завтра · 🗓 Неделя · 🔁 Сменить класс / Сменить учителя**.
+  **⏭ Следующий урок · 📅 Сегодня · ➡️ Завтра · 🗓 Неделя · 🔁 Сменить класс / Сменить учителя**.
   A student sees each lesson's teacher; a teacher sees each lesson's class.
+- **⏭ Следующий урок** (or `/next`) shows the first lesson that starts after the current
+  time, with a countdown ("⏳ Через 12 мин"). Breakfast, brunch, lunch and snack are
+  skipped, a lesson already in progress doesn't count, and teachers' free periods are
+  skipped. After the last lesson it shows the next school day's first lesson
+  ("📅 Завтра", "📅 В понедельник").
 - Every few minutes it checks each timetable that someone follows. When one changes,
   its followers get a list of what changed (e.g. `🔄 Пн, 3 урок: Алгебра → Геометрия`,
   or `🏫 Пн, 2 урок, Физика: класс 7А → класс 9А` for a teacher), followed by the new week.
