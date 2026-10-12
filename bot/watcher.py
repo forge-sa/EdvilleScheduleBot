@@ -68,14 +68,14 @@ class ScheduleWatcher:
     async def notify(self, old: Schedule, new: Schedule) -> None:
         messages = pack([render_changes(old, new), *render_week(new)])
         for chat_id in self.db.subscribers(new.kind, new.slug):
-            await self._send(chat_id, messages)
+            await self._send(chat_id, messages, new.kind)
             await asyncio.sleep(0.05)  # stay well under Telegram's ~30 messages/second
 
-    async def _send(self, chat_id: int, messages: list[str]) -> None:
+    async def _send(self, chat_id: int, messages: list[str], kind: Kind) -> None:
         for text in messages:
             for _ in range(3):
                 try:
-                    await self.bot.send_message(chat_id, text, reply_markup=main_menu())
+                    await self.bot.send_message(chat_id, text, reply_markup=main_menu(kind))
                     break
                 except TelegramRetryAfter as e:
                     await asyncio.sleep(e.retry_after)

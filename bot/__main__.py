@@ -21,7 +21,7 @@ COMMANDS = [
     BotCommand(command="today", description="Расписание на сегодня"),
     BotCommand(command="tomorrow", description="Расписание на завтра"),
     BotCommand(command="week", description="Расписание на неделю"),
-    BotCommand(command="class", description="Сменить класс"),
+    BotCommand(command="change", description="Сменить класс или учителя"),
     BotCommand(command="stop", description="Не присылать изменения"),
     BotCommand(command="help", description="Помощь"),
 ]

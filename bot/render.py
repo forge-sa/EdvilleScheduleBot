@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from html import escape
 
-from .edville import DAY_NAMES, Break, Day, Lesson, Schedule
+from .edville import DAY_NAMES, Break, Day, Kind, Lesson, Schedule
 
 MAX_MESSAGE = 4096
 MAX_CHANGES_SHOWN = 20
@@ -18,8 +18,13 @@ def _num(n: int) -> str:
     return _KEYCAPS[n] if 0 <= n < len(_KEYCAPS) else f"{n}."
 
 
+def label(kind: Kind, title: str) -> str:
+    """HTML-escaped heading: "Класс 9А" for a class, just the name for a teacher."""
+    return escape(title) if kind == "teacher" else f"Класс {escape(title)}"
+
+
 def _heading(schedule: Schedule) -> str:
-    return escape(schedule.title) if schedule.kind == "teacher" else f"Класс {escape(schedule.title)}"
+    return label(schedule.kind, schedule.title)
 
 
 def render_day(schedule: Schedule, day: Day, note: str = "") -> str:
@@ -108,7 +113,7 @@ def _describe(lessons: tuple[Lesson, ...]) -> str:
     )
 
 
-def _render_change(c: Change) -> str:
+def _render_change(c: Change, kind: Kind) -> str:
     where = f"<b>{_SHORT_DAYS[c.day]}, {c.num} урок</b>"
     if not c.old:
         return f"➕ {where}: {_describe(c.new)}"
@@ -119,7 +124,9 @@ def _render_change(c: Change) -> str:
         if o.subject == n.subject and o.meta == n.meta:
             return f"🕒 {where}, {escape(n.subject)}: {o.time} → {n.time}"
         if o.subject == n.subject:
-            return f"👤 {where}, {escape(n.subject)}: {escape(o.meta)} → {escape(n.meta)}"
+            # meta is the teacher on a class timetable and the class on a teacher's
+            icon = "🏫" if kind == "teacher" else "👤"
+            return f"{icon} {where}, {escape(n.subject)}: {escape(o.meta)} → {escape(n.meta)}"
     return f"🔄 {where}: {_describe(c.old)} → {_describe(c.new)}"
 
 
@@ -128,7 +135,7 @@ def render_changes(old: Schedule, new: Schedule) -> str:
     lines = [f"🔔 <b>Расписание изменилось · {_heading(new)}</b>", ""]
     if not changes:
         lines.append("Изменилось время перемен или другие детали.")
-    lines += [_render_change(c) for c in changes[:MAX_CHANGES_SHOWN]]
+    lines += [_render_change(c, new.kind) for c in changes[:MAX_CHANGES_SHOWN]]
     if len(changes) > MAX_CHANGES_SHOWN:
         lines.append(f"…и ещё {len(changes) - MAX_CHANGES_SHOWN}")
     lines += ["", "Новое расписание 👇"]

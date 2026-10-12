@@ -76,3 +76,23 @@ def test_removed_and_added_lessons():
     new = drop_lesson(old, 4, 10)
     assert "➖" in render_changes(old, new)
     assert "➕" in render_changes(new, old)
+
+
+def schedule_teacher() -> Schedule:
+    return parse_schedule((FIXTURES / "teacher_tyler-quinton.html").read_text(), "teacher", "tyler-quinton")
+
+
+def test_teacher_views_show_classes():
+    s = schedule_teacher()
+    day = render_day(s, s.day(0))
+    assert day.startswith("📚 <b>Tyler Quinton · Понедельник</b>")
+    assert "класс 7А" in day
+    assert render_week(s)[0].startswith("🗓 <b>Tyler Quinton · расписание на неделю</b>")
+
+
+def test_teacher_class_change():
+    old = schedule_teacher()
+    new = edit_lesson(old, 0, 2, meta="класс 9А")
+    text = render_changes(old, new)
+    assert "Tyler Quinton" in text
+    assert "🏫 <b>Пн, 2 урок</b>, Физика: класс 7А → класс 9А" in text

@@ -6,7 +6,7 @@ from aiogram.methods import SendMessage
 from bot.edville import EdvilleError, Entity
 from bot.storage import Storage
 from bot.watcher import ScheduleWatcher
-from tests.test_render import edit_lesson, schedule_9a
+from tests.test_render import edit_lesson, schedule_9a, schedule_teacher
 
 NINE_A = Entity("class", "9a", "9А")
 
@@ -120,3 +120,15 @@ def test_muted_and_blocked_users():
     assert {chat for chat, _ in bot.sent} == {1}
     assert db.get_subscription(2) is None  # blocked the bot -> forgotten
     assert db.get_subscription(3) is not None  # muted but still remembered
+
+
+def test_teacher_timetable_changes_are_announced():
+    watcher, db, site, bot = make()
+    site.schedule = schedule_teacher()
+    db.subscribe(1, Entity("teacher", "tyler-quinton", "Tyler Quinton"))
+    poll(watcher)
+    site.schedule = edit_lesson(site.schedule, 0, 2, meta="класс 9А")
+    poll(watcher)
+    poll(watcher)
+    [(chat, text)] = bot.sent
+    assert chat == 1 and "Tyler Quinton" in text and "класс 9А" in text
