@@ -66,6 +66,11 @@ class Lesson:
         m = re.match(r"(\d{1,2}):(\d{2})", self.time)
         return dtime(int(m[1]), int(m[2])) if m else None
 
+    @property
+    def end(self) -> dtime | None:
+        m = _TIME_RE.fullmatch(self.time)
+        return dtime(*map(int, m[2].split(":"))) if m else None
+
 
 @dataclass(frozen=True)
 class Break:

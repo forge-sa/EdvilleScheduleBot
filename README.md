@@ -26,6 +26,31 @@ to students and teachers, and sends them the new timetable whenever theirs chang
   or `🏫 Пн, 2 урок, Физика: класс 7А → класс 9А` for a teacher), followed by the new week.
 - `/change` starts over with the student/teacher question. `/stop` turns notifications
   off and `/start` turns them back on.
+- `/settings` turns on posts the bot sends by itself, each with a ✅ checkbox:
+  - **📅 Расписание на день**: the day's timetable at a chosen time (07:30 by default,
+    ⏪ / ⏩ move it by 15 minutes). Sent only on days that have lessons.
+  - **⏭ Следующий урок**: the next lesson as soon as each lesson ends ("⏳ Через 5 мин").
+    After the last lesson of the day this is the next school day's first lesson.
+  - **🔔 Изменения в расписании**: the change notifications described above.
+
+  The first two are off until someone turns them on. `/today`, `/next` and the other
+  commands work whatever the settings are.
+
+### In a group chat
+
+Add the bot to a class's group chat and it asks which class the chat follows (there is
+no student/teacher question). After an admin picks one, it shows the `/settings` panel.
+
+- Anyone in the group can use `/today`, `/next`, `/tomorrow`, `/week` and `/settings`
+  to look. Only the group's admins can pick the class, press the settings buttons,
+  `/change` or `/stop`.
+- No menu keyboard in groups: it would pop up for every member. Use the commands
+  (`/help` lists them).
+- Works with BotFather's default privacy mode on, since the bot only needs commands
+  and button presses. In a group with several bots, `/today@your_bot` always reaches
+  this one.
+- When Telegram turns a group into a supergroup (the chat gets a new id), the bot
+  moves the group's class and settings to the new chat.
 
 The bot replies in Russian, the same language as the site, and addresses everyone as "вы".
 
@@ -57,7 +82,7 @@ Settings (in `.env`):
 | `BOT_TOKEN`     | (required)                                     | Token from @BotFather                |
 | `POLL_INTERVAL` | `180`                                          | Seconds between change checks        |
 | `DB_PATH`       | `data/bot.sqlite3`                             | SQLite file with users and snapshots |
-| `TIMEZONE`      | `Asia/Almaty`                                  | Used for "today" and "tomorrow"      |
+| `TIMEZONE`      | `Asia/Almaty`                                  | "Today", "tomorrow" and post times   |
 | `SITE_URL`      | `https://edvilletimetable.pythonanywhere.com`  | Timetable site                       |
 
 ## How it works
@@ -68,7 +93,9 @@ bot/
   storage.py    SQLite: which chat follows which timetable, and the last known version of each
   render.py     Telegram message formatting and the lesson-by-lesson diff
   watcher.py    background loop that detects changes and notifies subscribers
-  handlers.py   commands, buttons, the student/teacher question and pickers, teacher search
+  announcer.py  background loop that posts the day's timetable and the next lesson
+  delivery.py   sending messages nobody asked for; forgets chats that blocked the bot
+  handlers.py   commands, buttons, pickers, teacher search, /settings, group admin checks
   keyboards.py  inline and reply keyboards
   __main__.py   wiring and startup
 ```
@@ -92,6 +119,11 @@ the list.
 If the site is down when someone asks for their timetable, the bot shows the last
 saved copy with a warning.
 
+**Scheduled posts.** Every 20 seconds the announcer sends whatever fell due since its
+previous check, so each post goes out once. It reads the snapshots the watcher keeps,
+so it downloads nothing. Posts that fall due while the bot is stopped are skipped,
+not sent late.
+
 ## Notes on the site's data
 
 - Class (5) has a different bell schedule, so a teacher's "6 урок" can mean
@@ -109,5 +141,5 @@ saved copy with a warning.
 
 The tests run offline against saved copies of the site's pages in `tests/fixtures/`.
 They cover the parser, formatting and diffs, the change watcher (settling, outages,
-muted and blocked users, teachers), and the full student and teacher conversations
-driven through aiogram's dispatcher.
+muted and blocked users, teachers), the scheduled posts, the database upgrade, and the
+full student, teacher and group-chat conversations driven through aiogram's dispatcher.

@@ -2,7 +2,7 @@
 
 import asyncio
 import itertools
-from datetime import datetime
+from datetime import datetime, time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -10,8 +10,8 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.base import BaseSession
 from aiogram.enums import ParseMode
-from aiogram.methods import EditMessageText, SendMessage
-from aiogram.types import Message, Update
+from aiogram.methods import EditMessageText, GetChatMember, GetMe, SendMessage
+from aiogram.types import ChatMemberMember, ChatMemberOwner, Message, Update, User
 
 from bot import handlers
 from bot.config import Config
@@ -27,6 +27,7 @@ from tests.test_render import schedule_9a
 DP = Dispatcher()
 DP.include_router(handlers.router)
 CHAT_IDS = itertools.count(1000)
+BOT_USER = {"id": 1, "is_bot": True, "first_name": "EdVille", "username": "EdvilleTestBot"}
 
 
 class FakeEdville:
@@ -46,11 +47,17 @@ class RecordingSession(BaseSession):
     def __init__(self):
         super().__init__()
         self.calls = []
+        self.admin = True  # whether the user is an admin of the group chat
 
     async def make_request(self, bot, method, timeout=None):
         self.calls.append(method)
         if isinstance(method, (SendMessage, EditMessageText)):
             return Message(message_id=1, date=datetime.now(), chat={"id": 1, "type": "private"}, text=method.text)
+        if isinstance(method, GetMe):
+            return User(**BOT_USER)
+        if isinstance(method, GetChatMember):
+            user = User(id=method.user_id, is_bot=False, first_name="Test")
+            return ChatMemberOwner(user=user, is_anonymous=False) if self.admin else ChatMemberMember(user=user)
         return True
 
     async def close(self):
@@ -61,9 +68,12 @@ class RecordingSession(BaseSession):
 
 
 class Harness:
-    def __init__(self):
+    def __init__(self, group: bool = False):
         self.chat_id = next(CHAT_IDS)
         self.chat = {"id": self.chat_id, "type": "private"}
+        if group:
+            self.chat_id = -self.chat_id
+            self.chat = {"id": self.chat_id, "type": "supergroup", "title": "9А"}
         self.user = {"id": self.chat_id, "is_bot": False, "first_name": "Test"}
         self.ids = itertools.count(1)
         self.session = RecordingSession()
@@ -87,6 +97,20 @@ class Harness:
         message = {"message_id": next(self.ids), "date": 0, "chat": self.chat, "text": "…"}
         query = {"id": str(next(self.ids)), "from": self.user, "chat_instance": "x", "data": data, "message": message}
         return self._feed({"callback_query": query})
+
+    def added_to_group(self) -> list:
+        update = {
+            "chat": self.chat,
+            "from": self.user,
+            "date": 0,
+            "old_chat_member": {"status": "left", "user": BOT_USER},
+            "new_chat_member": {"status": "member", "user": BOT_USER},
+        }
+        return self._feed({"my_chat_member": update})
+
+    def upgrade_to_supergroup(self, new_id: int) -> list:
+        message = {"message_id": next(self.ids), "date": 0, "chat": self.chat, "from": self.user}
+        return self._feed({"message": {**message, "migrate_to_chat_id": new_id}})
 
     @property
     def sub(self):
@@ -254,3 +278,113 @@ def test_next_lesson_button():
     assert "Следующий урок · Класс 9А" in texts(calls)[0]
     assert menu(calls[-1])[0] == "⏭ Следующий урок"
     assert "Следующий урок" in texts(h.text("/next"))[0]
+
+
+# --- settings ---
+
+
+def labels(call) -> list[str]:
+    return [text for text, _ in buttons(call)]
+
+
+def test_settings_toggles():
+    h = Harness()
+    h.press("pick:class:9a")
+    calls = h.text("/settings")
+    assert "Настройки · Класс 9А" in texts(calls)[0]
+    assert "⬜️ Расписание на день в 07:30" in labels(calls[-1])
+
+    h.press("set:daily")
+    h.press("set:later")
+    h.press("set:later")
+    calls = h.press("set:earlier")
+    assert (h.sub.daily, h.sub.daily_time) == (True, time(7, 45))
+    assert "✅ Расписание на день в 07:45" in labels(calls[-1])  # the panel is redrawn in place
+
+    h.press("set:next")
+    h.press("set:changes")
+    assert (h.sub.next_lesson, h.sub.notify) == (True, False)
+
+    h.press("set:daily")
+    assert (h.sub.daily, h.sub.daily_time) == (False, time(7, 45))
+
+
+def test_settings_need_a_choice_first():
+    h = Harness()
+    assert "Сначала выберите" in texts(h.text("/settings"))[0]
+    assert h.press("set:daily")[-1].show_alert
+
+
+# --- group chats ---
+
+
+def test_added_to_group_asks_for_class():
+    h = Harness(group=True)
+    [call] = h.added_to_group()
+    assert "Расписание какого класса" in call.text
+    assert ("9А", "pick:class:9a") in buttons(call)
+    assert "⬅️ Назад" not in labels(call)
+
+
+def test_group_picks_a_class_then_sees_settings():
+    h = Harness(group=True)
+    reply = texts(h.text("/start@EdvilleTestBot"))[0]
+    assert "Расписание какого класса" in reply and "ученик" not in reply
+
+    calls = h.press("pick:class:9a")
+    assert (h.sub.kind, h.sub.slug) == ("class", "9a")
+    assert "Настройки · Класс 9А" in texts(calls)[0]
+    assert (h.sub.daily, h.sub.next_lesson) == (False, False)  # off until an admin turns them on
+    assert "Настройки" in texts(h.text("/start"))[0]
+
+
+def test_group_timetable_commands_work_without_scheduled_posts():
+    h = Harness(group=True)
+    h.press("pick:class:9a")
+    for command, expected in [
+        ("/today", "Класс 9А"),
+        ("/next@EdvilleTestBot", "Следующий урок · Класс 9А"),
+        ("/tomorrow", "Класс 9А"),
+        ("/week", "расписание на неделю"),
+    ]:
+        sent = [c for c in h.text(command) if isinstance(c, SendMessage)]
+        assert expected in sent[0].text
+        assert all(c.reply_markup is None for c in sent)  # no reply keyboard popping up for the whole group
+    assert texts(h.text("/today@SomeOtherBot")) == []
+
+
+def test_only_group_admins_change_things():
+    h = Harness(group=True)
+    h.session.admin = False
+    calls = h.press("pick:class:9a")
+    assert h.sub is None and calls[-1].show_alert and "администраторы" in calls[-1].text
+
+    h.session.admin = True
+    h.press("pick:class:9a")
+    h.session.admin = False
+    for action in ["daily", "later", "next", "changes", "change"]:
+        assert h.press(f"set:{action}")[-1].show_alert
+    assert "администраторы" in texts(h.text("/change"))[0]
+    assert "администраторы" in texts(h.text("/stop"))[0]
+    assert (h.sub.daily, h.sub.daily_time, h.sub.next_lesson, h.sub.notify) == (False, time(7, 30), False, True)
+
+    # Everyone can still look.
+    assert "Класс 9А" in texts(h.text("/today"))[0]
+    assert "Настройки" in texts(h.text("/settings"))[0]
+
+
+def test_group_admin_changes_class_from_settings():
+    h = Harness(group=True)
+    h.press("pick:class:9a")
+    h.press("set:next")
+    assert "Расписание какого класса" in texts(h.press("set:change"))[0]
+    h.press("pick:class:5")
+    assert (h.sub.slug, h.sub.next_lesson) == ("5", True)  # settings survive a class change
+
+
+def test_group_upgraded_to_supergroup_keeps_its_class():
+    h = Harness(group=True)
+    h.press("pick:class:9a")
+    h.upgrade_to_supergroup(-1009)
+    assert h.sub is None
+    assert h.db.get_subscription(-1009).slug == "9a"

@@ -6,10 +6,10 @@ import asyncio
 import logging
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 
+from .delivery import deliver
 from .edville import EdvilleClient, EdvilleError, Kind, Schedule
-from .keyboards import main_menu
+from .keyboards import chat_menu
 from .render import pack, render_changes, render_week
 from .storage import Storage
 
@@ -68,33 +68,5 @@ class ScheduleWatcher:
     async def notify(self, old: Schedule, new: Schedule) -> None:
         messages = pack([render_changes(old, new), *render_week(new)])
         for chat_id in self.db.subscribers(new.kind, new.slug):
-            await self._send(chat_id, messages, new.kind)
+            await deliver(self.bot, self.db, chat_id, messages, chat_menu(chat_id, new.kind))
             await asyncio.sleep(0.05)  # stay well under Telegram's ~30 messages/second
-
-    async def _send(self, chat_id: int, messages: list[str], kind: Kind) -> None:
-        for text in messages:
-            for _ in range(3):
-                try:
-                    await self.bot.send_message(chat_id, text, reply_markup=main_menu(kind))
-                    break
-                except TelegramRetryAfter as e:
-                    await asyncio.sleep(e.retry_after)
-                except TelegramForbiddenError as e:
-                    # Blocked the bot, left the group, or deleted their account.
-                    log.info("dropping chat %s: %s", chat_id, e)
-                    self.db.unsubscribe(chat_id)
-                    return
-                except TelegramBadRequest as e:
-                    if "chat not found" in str(e).lower():
-                        log.info("dropping chat %s: %s", chat_id, e)
-                        self.db.unsubscribe(chat_id)
-                    else:
-                        log.exception("could not notify chat %s", chat_id)
-                    return
-                except Exception:
-                    # One failing chat must not stop the others from being notified.
-                    log.exception("could not notify chat %s", chat_id)
-                    return
-            else:
-                log.warning("gave up notifying chat %s after repeated rate limits", chat_id)
-                return

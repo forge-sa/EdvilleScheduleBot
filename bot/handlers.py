@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, time
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import JOIN_TRANSITION, ChatMemberUpdatedFilter, Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, ChatMemberUpdated, InlineKeyboardMarkup, Message
 
 from .config import Config
 from .edville import Day, EdvilleClient, EdvilleError, Entity, Kind, Schedule
@@ -23,11 +23,14 @@ from .keyboards import (
     TEACHERS_PER_PAGE,
     Pick,
     Role,
+    Setting,
     TeacherPage,
+    chat_menu,
     class_picker,
     entity_picker,
     main_menu,
     role_picker,
+    settings_menu,
     teacher_picker,
 )
 from .render import label, render_day, render_next, render_week
@@ -42,15 +45,38 @@ HELP = (
     "/today — расписание на сегодня\n"
     "/tomorrow — на завтра\n"
     "/week — на всю неделю\n"
+    "/settings — присылать расписание на день и следующий урок автоматически\n"
     "/change — выбрать другой класс или учителя\n"
     "/stop — не присылать изменения\n"
-    "/start — включить их снова"
+    "/start — включить их снова\n\n"
+    "Меня можно добавить в чат класса."
 )
+GROUP_HELP = (
+    "Я показываю в этом чате расписание EdVille.\n\n"
+    "/next — следующий урок\n"
+    "/today — расписание на сегодня\n"
+    "/tomorrow — на завтра\n"
+    "/week — на всю неделю\n"
+    "/settings — что присылать в чат автоматически\n"
+    "/change — выбрать другой класс\n\n"
+    "Настройки и класс меняют только администраторы чата."
+)
+GREETING = "👋 Здравствуйте! Я показываю расписание EdVille и сообщаю, когда оно меняется."
 ASK_ROLE = "Вы ученик или учитель?"
 ASK_CLASS = "В каком вы классе?"
+ASK_GROUP_CLASS = "Расписание какого класса показывать в этом чате?"
 ASK_TEACHER = "Найдите себя в списке или напишите фамилию 👇"
 SITE_DOWN = "⚠️ Сайт с расписанием сейчас не отвечает, показываю последнюю сохранённую версию."
 LOAD_FAILED = "😕 Не получилось загрузить расписание. Попробуйте ещё раз чуть позже."
+ADMINS_ONLY = "Это могут менять только администраторы чата."
+SETTINGS = (
+    "⚙️ <b>Настройки · {label}</b>\n\n"
+    "Отметьте, что присылать сюда автоматически:\n"
+    "📅 расписание на день — в учебные дни, в выбранное время;\n"
+    "⏭ следующий урок — как только закончится урок;\n"
+    "🔔 новое расписание — когда его поменяют на сайте.\n\n"
+    "/today и /next работают всегда."
+)
 
 
 class Picking(StatesGroup):
@@ -104,13 +130,45 @@ async def _fail(event: Message | CallbackQuery, text: str) -> None:
         await event.answer(text, show_alert=True)
 
 
-async def ask_role(event: Message | CallbackQuery, state: FSMContext, intro: str = "") -> None:
+def _chat_id(event: Message | CallbackQuery) -> int:
+    return event.chat.id if isinstance(event, Message) else event.message.chat.id
+
+
+def _in_group(event: Message | CallbackQuery) -> bool:
+    return _chat_id(event) < 0
+
+
+async def _check_admin(event: Message | CallbackQuery) -> bool:
+    """Anyone in a group can look at the timetable, but only its admins can
+    change what the group follows or gets sent. Says so to everyone else."""
+    if not _in_group(event):
+        return True
+    chat_id = _chat_id(event)
+    if isinstance(event, Message) and event.sender_chat and event.sender_chat.id == chat_id:
+        return True  # an anonymous admin, writing as the group
+    member = await event.bot.get_chat_member(chat_id, event.from_user.id)
+    if member.status in ("creator", "administrator"):
+        return True
+    await _fail(event, ADMINS_ONLY)
+    return False
+
+
+async def ask_role(event: Message | CallbackQuery, state: FSMContext, edville: EdvilleClient, intro: str = "") -> None:
+    """The first question: student or teacher. A group chat follows a class, so it skips straight to the classes."""
+    if _in_group(event):
+        await ask_entity(event, "class", edville, state, intro=intro)
+        return
     await state.clear()
     await _reply(event, f"{intro}\n\n{ASK_ROLE}" if intro else ASK_ROLE, role_picker())
 
 
 async def ask_entity(
-    event: Message | CallbackQuery, kind: Kind, edville: EdvilleClient, state: FSMContext, page: int = 0
+    event: Message | CallbackQuery,
+    kind: Kind,
+    edville: EdvilleClient,
+    state: FSMContext,
+    page: int = 0,
+    intro: str = "",
 ) -> None:
     """Show the class list or one page of the teacher list."""
     try:
@@ -121,17 +179,25 @@ async def ask_entity(
         return
     if kind == "class":
         await state.clear()
-        await _reply(event, ASK_CLASS, class_picker(entities))
+        group = _in_group(event)
+        question = ASK_GROUP_CLASS if group else ASK_CLASS
+        await _reply(event, f"{intro}\n\n{question}" if intro else question, class_picker(entities, back=not group))
     else:
         await state.set_state(Picking.teacher)
         await _reply(event, ASK_TEACHER, teacher_picker(real_teachers(entities), page))
 
 
-async def _subscription(message: Message, db: Storage, state: FSMContext) -> Subscription | None:
+async def _subscription(
+    message: Message, edville: EdvilleClient, db: Storage, state: FSMContext
+) -> Subscription | None:
     sub = db.get_subscription(message.chat.id)
     if sub is None:
-        await ask_role(message, state, intro="Сначала выберите, чьё расписание показывать.")
+        await ask_role(message, state, edville, intro="Сначала выберите, чьё расписание показывать.")
     return sub
+
+
+def _settings_text(sub: Subscription) -> str:
+    return SETTINGS.format(label=label(sub.kind, sub.title))
 
 
 async def _load(edville: EdvilleClient, db: Storage, sub: Subscription) -> tuple[Schedule, str] | None:
@@ -156,10 +222,13 @@ def _next_school_day(schedule: Schedule, after: int) -> Day | None:
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message, db: Storage, state: FSMContext) -> None:
+async def cmd_start(message: Message, edville: EdvilleClient, db: Storage, state: FSMContext) -> None:
     sub = db.get_subscription(message.chat.id)
     if sub is None:
-        await ask_role(message, state, intro="👋 Здравствуйте! Я показываю расписание EdVille и сообщаю, когда оно меняется.")
+        await ask_role(message, state, edville, intro=GREETING)
+        return
+    if _in_group(message):
+        await message.answer(_settings_text(sub), reply_markup=settings_menu(sub))
         return
     await state.clear()
     db.set_notify(message.chat.id, True)
@@ -170,14 +239,31 @@ async def cmd_start(message: Message, db: Storage, state: FSMContext) -> None:
     )
 
 
+@router.my_chat_member(ChatMemberUpdatedFilter(JOIN_TRANSITION), F.chat.type.in_({"group", "supergroup"}))
+async def on_added_to_group(event: ChatMemberUpdated, edville: EdvilleClient) -> None:
+    try:
+        classes = await edville.list_entities("class")
+    except EdvilleError:
+        log.exception("could not load the class list")
+        await event.answer(f"{GREETING}\n\nЧтобы выбрать класс, напишите /start")
+        return
+    await event.answer(f"{GREETING}\n\n{ASK_GROUP_CLASS}", reply_markup=class_picker(classes, back=False))
+
+
+@router.message(F.migrate_to_chat_id)
+async def on_group_migrated(message: Message, db: Storage) -> None:
+    db.move_chat(message.chat.id, message.migrate_to_chat_id)
+
+
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
-    await message.answer(HELP)
+    await message.answer(GROUP_HELP if _in_group(message) else HELP)
 
 
 @router.message(Command("change"))
-async def cmd_change(message: Message, state: FSMContext) -> None:
-    await ask_role(message, state)
+async def cmd_change(message: Message, edville: EdvilleClient, state: FSMContext) -> None:
+    if await _check_admin(message):
+        await ask_role(message, state, edville)
 
 
 @router.message(F.text.in_(BTN_CHANGE.values()))
@@ -193,8 +279,8 @@ async def on_role(query: CallbackQuery, callback_data: Role, edville: EdvilleCli
 
 
 @router.callback_query(F.data == BACK_TO_ROLE)
-async def on_back(query: CallbackQuery, state: FSMContext) -> None:
-    await ask_role(query, state)
+async def on_back(query: CallbackQuery, edville: EdvilleClient, state: FSMContext) -> None:
+    await ask_role(query, state, edville)
 
 
 @router.callback_query(TeacherPage.filter())
@@ -214,6 +300,8 @@ async def on_pick(
     query: CallbackQuery, callback_data: Pick, edville: EdvilleClient, db: Storage, state: FSMContext
 ) -> None:
     kind: Kind = "teacher" if callback_data.kind == "teacher" else "class"
+    if not await _check_admin(query):
+        return
     try:
         entities = await edville.list_entities(kind)
         entity = next((e for e in entities if e.slug == callback_data.slug), None)
@@ -235,9 +323,52 @@ async def on_pick(
         # any) may be outdated; start comparing from what the user sees now.
         db.save_snapshot(schedule)
 
+    if _in_group(query):
+        sub = db.get_subscription(chat_id)
+        await _reply(query, f"✅ Готово!\n\n{_settings_text(sub)}", settings_menu(sub))
+        return
     await _reply(query, f"✅ {label(entity.kind, entity.title)}. Если расписание изменится, я пришлю новое.")
     for text in render_week(schedule):
         await query.bot.send_message(chat_id, text, reply_markup=main_menu(entity.kind))
+
+
+@router.message(Command("settings"))
+async def cmd_settings(message: Message, edville: EdvilleClient, db: Storage, state: FSMContext) -> None:
+    sub = await _subscription(message, edville, db, state)
+    if sub is not None:
+        await message.answer(_settings_text(sub), reply_markup=settings_menu(sub))
+
+
+def _shift(at: time, minutes: int) -> time:
+    total = (at.hour * 60 + at.minute + minutes) % (24 * 60)
+    return time(total // 60, total % 60)
+
+
+@router.callback_query(Setting.filter())
+async def on_setting(
+    query: CallbackQuery, callback_data: Setting, edville: EdvilleClient, db: Storage, state: FSMContext
+) -> None:
+    chat_id = query.message.chat.id
+    sub = db.get_subscription(chat_id)
+    if sub is None:
+        await query.answer("Сначала выберите расписание: /start", show_alert=True)
+        return
+    if not await _check_admin(query):
+        return
+    action = callback_data.action
+    if action == "change":
+        await ask_role(query, state, edville)
+        return
+    if action == "daily":
+        db.set_daily(chat_id, not sub.daily, sub.daily_time)
+    elif action in ("earlier", "later"):
+        db.set_daily(chat_id, sub.daily, _shift(sub.daily_time, -15 if action == "earlier" else 15))
+    elif action == "next":
+        db.set_next_lesson(chat_id, not sub.next_lesson)
+    elif action == "changes":
+        db.set_notify(chat_id, not sub.notify)
+    sub = db.get_subscription(chat_id)
+    await _reply(query, _settings_text(sub), settings_menu(sub))
 
 
 # --- showing the timetable ----------------------------------------------------------
@@ -246,7 +377,7 @@ async def on_pick(
 async def _send_day(
     message: Message, edville: EdvilleClient, db: Storage, state: FSMContext, config: Config, offset: int
 ) -> None:
-    sub = await _subscription(message, db, state)
+    sub = await _subscription(message, edville, db, state)
     if sub is None:
         return
     loaded = await _load(edville, db, sub)
@@ -254,23 +385,24 @@ async def _send_day(
         await message.answer(LOAD_FAILED)
         return
     schedule, note = loaded
+    menu = chat_menu(message.chat.id, sub.kind)
 
     weekday = (datetime.now(config.timezone).weekday() + offset) % 7
     day = schedule.day(weekday)
     if day is None or not day.lessons:
         day = _next_school_day(schedule, weekday)
         if day is None:
-            await message.answer("В расписании пока нет уроков.", reply_markup=main_menu(sub.kind))
+            await message.answer("В расписании пока нет уроков.", reply_markup=menu)
             return
         when = "Сегодня" if offset == 0 else "Завтра"
         note = "\n".join(filter(None, [note, f"{when} уроков нет 🎉 Ближайший учебный день:"]))
-    await message.answer(render_day(schedule, day, note), reply_markup=main_menu(sub.kind))
+    await message.answer(render_day(schedule, day, note), reply_markup=menu)
 
 
 @router.message(Command("next"))
 @router.message(F.text == BTN_NEXT)
 async def cmd_next(message: Message, edville: EdvilleClient, db: Storage, state: FSMContext, config: Config) -> None:
-    sub = await _subscription(message, db, state)
+    sub = await _subscription(message, edville, db, state)
     if sub is None:
         return
     loaded = await _load(edville, db, sub)
@@ -278,12 +410,13 @@ async def cmd_next(message: Message, edville: EdvilleClient, db: Storage, state:
         await message.answer(LOAD_FAILED)
         return
     schedule, note = loaded
+    menu = chat_menu(message.chat.id, sub.kind)
     now = datetime.now(config.timezone)
     found = schedule.next_lesson(now)
     if found is None:
-        await message.answer("В расписании пока нет уроков.", reply_markup=main_menu(sub.kind))
+        await message.answer("В расписании пока нет уроков.", reply_markup=menu)
         return
-    await message.answer(render_next(schedule, *found, now, note), reply_markup=main_menu(sub.kind))
+    await message.answer(render_next(schedule, *found, now, note), reply_markup=menu)
 
 
 @router.message(Command("today"))
@@ -303,7 +436,7 @@ async def cmd_tomorrow(
 @router.message(Command("week"))
 @router.message(F.text == BTN_WEEK)
 async def cmd_week(message: Message, edville: EdvilleClient, db: Storage, state: FSMContext) -> None:
-    sub = await _subscription(message, db, state)
+    sub = await _subscription(message, edville, db, state)
     if sub is None:
         return
     loaded = await _load(edville, db, sub)
@@ -314,13 +447,15 @@ async def cmd_week(message: Message, edville: EdvilleClient, db: Storage, state:
     if note:
         await message.answer(note)
     for text in render_week(schedule):
-        await message.answer(text, reply_markup=main_menu(sub.kind))
+        await message.answer(text, reply_markup=chat_menu(message.chat.id, sub.kind))
 
 
 @router.message(Command("stop"))
 async def cmd_stop(message: Message, db: Storage) -> None:
     if db.get_subscription(message.chat.id) is None:
         await message.answer("Вы ещё ничего не выбрали. Начните с /start")
+        return
+    if not await _check_admin(message):
         return
     db.set_notify(message.chat.id, False)
     await message.answer("🔕 Больше не буду присылать изменения расписания. Включить снова — /start")
@@ -351,9 +486,9 @@ async def on_teacher_search(message: Message, edville: EdvilleClient) -> None:
 
 
 @router.message(F.chat.type == "private")
-async def fallback(message: Message, db: Storage, state: FSMContext) -> None:
+async def fallback(message: Message, edville: EdvilleClient, db: Storage, state: FSMContext) -> None:
     sub = db.get_subscription(message.chat.id)
     if sub is None:
-        await ask_role(message, state)
+        await ask_role(message, state, edville)
     else:
         await message.answer("Пользуйтесь кнопками внизу или /help 🙂", reply_markup=main_menu(sub.kind))
